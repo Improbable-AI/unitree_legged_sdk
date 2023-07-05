@@ -14,6 +14,7 @@
 #include "leg_control_data_lcmt.hpp"
 #include "pd_tau_targets_lcmt.hpp"
 #include "rc_command_lcmt.hpp"
+#include "battery_state_lcmt.hpp"
 
 using namespace std;
 using namespace UNITREE_LEGGED_SDK;
@@ -40,6 +41,7 @@ public:
     float sin_mid_q[3] = {0.0, 1.2, -2.0};
     float Kp[3] = {0};
     float Kd[3] = {0};
+    float tau_ff_exp[12] = {0};
     double time_consume = 0;
     int rate_count = 0;
     int sin_count = 0;
@@ -54,6 +56,7 @@ public:
     leg_control_data_lcmt joint_state_simple = {0};
     pd_tau_targets_lcmt joint_command_simple = {0};
     rc_command_lcmt rc_command = {0};
+    battery_state_lcmt battery_state_simple = {0};
 
     xRockerBtnDataStruct _keyData;
     int mode = 0;
@@ -77,18 +80,18 @@ void Custom::init()
         joint_command_simple.kd[i] = 0.5;
     }
 
-    joint_command_simple.q_des[0] = 0.1;
-    joint_command_simple.q_des[1] = 0.8;
-    joint_command_simple.q_des[2] = -1.5;
-    joint_command_simple.q_des[3] = -0.1;
-    joint_command_simple.q_des[4] = 0.8;
-    joint_command_simple.q_des[5] = -1.5;
-    joint_command_simple.q_des[6] = 0.1;
-    joint_command_simple.q_des[7] = 1.0;
-    joint_command_simple.q_des[8] = -1.5;
-    joint_command_simple.q_des[9] = -0.1;
-    joint_command_simple.q_des[10] = 0.8;
-    joint_command_simple.q_des[11] = -1.5;
+    joint_command_simple.q_des[0] = -0.3;
+    joint_command_simple.q_des[1] = 1.2;
+    joint_command_simple.q_des[2] = -2.721;
+    joint_command_simple.q_des[3] = 0.3;
+    joint_command_simple.q_des[4] = 1.2;
+    joint_command_simple.q_des[5] = -2.721;
+    joint_command_simple.q_des[6] = -0.3;
+    joint_command_simple.q_des[7] = 1.2;
+    joint_command_simple.q_des[8] = -2.721;
+    joint_command_simple.q_des[9] = 0.3;
+    joint_command_simple.q_des[10] = 1.2;
+    joint_command_simple.q_des[11] = -2.721;
 
     printf("SET NOMINAL POSE");
 
@@ -184,9 +187,18 @@ void Custom::RobotControl()
         body_state_simple.contact_estimate[i] = state.footForce[i];
     }
 
+    battery_state_simple.current = state.bms.current;
+    battery_state_simple.cycle = state.bms.cycle;
+    battery_state_simple.SOC = state.bms.SOC;
+    battery_state_simple.bms_status = state.bms.bms_status;
+    for(int i = 0; i < 10; i++){
+        battery_state_simple.cell_voltage[i] = state.bms.cell_vol[i];
+    }
+
     _simpleLCM.publish("state_estimator_data", &body_state_simple);
     _simpleLCM.publish("leg_control_data", &joint_state_simple);
     _simpleLCM.publish("rc_command", &rc_command);
+    _simpleLCM.publish("battery_state", &battery_state_simple);
 
     if(_firstRun && joint_state_simple.q[0] != 0){
         for(int i = 0; i < 12; i++){
@@ -194,6 +206,40 @@ void Custom::RobotControl()
         }
         _firstRun = false;
     }
+
+    // // precompute the expected torque command
+    // for(int i = 0; i < 12; i++){
+    //     tau_ff_exp[i] = joint_command_simple.kp[i]*(joint_command_simple.q_des[i] - joint_state_simple.q[i]); // + joint_command_simple.kd[i]*(joint_command_simple.qd_des[i] - joint_state_simple.qd[i]);
+    // }
+    // // implement safety constraint on the expected torque command
+    // for(int i = 0; i < 12; i++){
+    //     tau_ff_exp[i] = std::min(std::max(tau_ff_exp[i], -joint_command_simple.tau_ff_max[i]), joint_command_simple.tau_ff_max[i]);
+    // }
+    // clamp the position command based on constrained torque
+
+    // for(int i = 0; i < 12; i++){
+    //     if (joint_command_simple.tau_p_clamp[i] <= 0.0){
+    //         continue;
+    //     }
+    //     else{
+    //         if (joint_command_simple.q_des[i] > joint_state_simple.q[i]){
+    //             joint_command_simple.q_des[i] = std::min(joint_command_simple.q_des[i], joint_state_simple.q[i] + joint_command_simple.tau_p_clamp[i]/joint_command_simple.kp[i]);
+    //         } else {
+    //             joint_command_simple.q_des[i] = std::max(joint_command_simple.q_des[i], joint_state_simple.q[i] - joint_command_simple.tau_p_clamp[i]/joint_command_simple.kp[i]);
+    //         }
+    //     }
+    // }
+
+    // float max_torque = 17.0;
+
+    // for(int i = 0; i < 12; i++){
+    //     if (joint_command_simple.q_des[i] > joint_state_simple.q[i]){
+    //         joint_command_simple.q_des[i] = std::min(joint_command_simple.q_des[i], joint_state_simple.q[i] + max_torque/joint_command_simple.kp[i]);
+    //     } else {
+    //         joint_command_simple.q_des[i] = std::max(joint_command_simple.q_des[i], joint_state_simple.q[i] - max_torque/joint_command_simple.kp[i]);
+    //     }
+    // }
+
 
     for(int i = 0; i < 12; i++){
         cmd.motorCmd[i].q = joint_command_simple.q_des[i];
@@ -204,7 +250,7 @@ void Custom::RobotControl()
     }
 
     safe.PositionLimit(cmd);
-    int res1 = safe.PowerProtect(cmd, state, 9);
+    int res1 = safe.PowerProtect(cmd, state, 15);
     udp.SetSend(cmd);
 
 }
